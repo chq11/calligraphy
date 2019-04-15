@@ -13,9 +13,36 @@ import numpy as np
 from units import *
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-import os
+import os,time
 os.environ["CUDA_VISIBLE_DEVICES"] = '9'
 
+NUM_TRAIN = 50000   # 训练集数量
+NUM_VAL = 5000      # 测试集数量
+NOISE_DIM = 1024
+Batch_size = 512
+Show_every = 1
+Num_epochs = 999999
+
+img_width = 128
+img_height = 128
+Save_sample = 10000
+random_scale = False
+hsv = True
+augment = False
+preprocess = False
+result_p = './result/1/'
+
+Model_save_p = result_p + 'model/'
+makedir(Model_save_p)
+sample_image_p = result_p + 'sample/'
+makedir(sample_image_p)
+List_path = './list/calligraphy/'
+train_list = List_path+'all_train_list.txt'
+
+
+# dtype = torch.FloatTensor
+dtype = torch.cuda.FloatTensor ## UNCOMMENT THIS LINE IF YOU'RE ON A GPU!
+Bce_loss = nn.BCEWithLogitsLoss()
 #matplotlib inline
 plt.rcParams['figure.figsize'] = (10.0, 8.0) # set default size of plots
 plt.rcParams['image.interpolation'] = 'nearest'
@@ -53,8 +80,7 @@ def count_params(model):
     param_count = np.sum([np.prod(p.size()) for p in model.parameters()])
     return param_count
 
-answers = np.load('gan-checks-tf.npz')
-
+# answers = np.load('gan-checks-tf.npz')
 # 采样函数为自己定义的序列采样（即按顺序采样）
 class ChunkSampler(sampler.Sampler):
     """Samples elements sequentially from some offset.
@@ -71,22 +97,6 @@ class ChunkSampler(sampler.Sampler):
 
     def __len__(self):
         return self.num_samples
-
-NUM_TRAIN = 50000   # 训练集数量
-NUM_VAL = 5000      # 测试集数量
-NOISE_DIM = 1024
-Batch_size = 512
-Show_every = 1
-Num_epochs = 50000
-
-img_width = 128
-img_height = 128
-random_scale = False
-hsv = True
-augment = False
-preprocess = False
-List_path = './list/calligraphy/'
-train_list = List_path+'all_train_list.txt'
 # mnist_train = dset.MNIST('./cs231n/datasets/MNIST_data', train=True, download=True,
 #                            transform=T.ToTensor())
 # print(mnist_train[0])
@@ -133,14 +143,6 @@ class GANNetworkDataset(Dataset):
     def __len__(self):
         return len(self.lines)
 
-calligraphy_dataset = GANNetworkDataset(train_list=train_list)
-# print(np.shape(calligraphy_dataset[2][0]))
-loader_train = DataLoader(calligraphy_dataset, shuffle=False, num_workers=8, batch_size=Batch_size)
-
-imgs = loader_train.__iter__().next()[0].numpy().squeeze()
-# print(imgs.shape)
-show_images(imgs)
-
 def sample_noise(batch_size, dim):
     """
     Generate a PyTorch Tensor of uniform random noise.
@@ -180,8 +182,7 @@ def initialize_weights(m):
     if isinstance(m, nn.Linear) or isinstance(m, nn.ConvTranspose2d):
         nn.init.xavier_uniform_(m.weight.data)
 
-# dtype = torch.FloatTensor
-dtype = torch.cuda.FloatTensor ## UNCOMMENT THIS LINE IF YOU'RE ON A GPU!
+
 def discriminator():
     """
     Build and return a PyTorch model implementing the architecture above.
@@ -250,12 +251,11 @@ def build_dc_classifier():
         nn.LeakyReLU(negative_slope=0.01),
         nn.Linear(4*4*128,1)                         # 4*4*64           # 4*4*128
     )
-
-data = Variable(loader_train.__iter__().next()[0]).type(dtype)
-# print(np.shape(data.cpu().numpy()))
-b = build_dc_classifier().type(dtype)
-out = b(data)
-print(out.size())
+# data = Variable(loader_train.__iter__().next()[0]).type(dtype)
+# # print(np.shape(data.cpu().numpy()))
+# b = build_dc_classifier().type(dtype)
+# out = b(data)
+# print(out.size())
 
 def build_dc_generator(noise_dim=NOISE_DIM):
     """
@@ -298,17 +298,9 @@ def build_dc_generator(noise_dim=NOISE_DIM):
         Flatten(),
     )
     return model
-
-test_g_gan = build_dc_generator().type(dtype)
-test_g_gan.apply(initialize_weights)
-
-fake_seed = Variable(torch.randn(Batch_size, NOISE_DIM)).type(dtype)
-# print(np.shape(fake_seed.cpu().numpy()))
-fake_images = test_g_gan.forward(fake_seed)
-print(fake_images.size())
-
+# test_g_gan = build_dc_generator().type(dtype)
+# test_g_gan.apply(initialize_weights)
 #----------------------------------------------------------------------------------------------------
-Bce_loss = nn.BCEWithLogitsLoss()
 
 def discriminator_loss(logits_real, logits_fake):
     """
@@ -412,7 +404,20 @@ def get_optimizer(model):
     optimizer = optim.Adam(model.parameters(), lr=0.001, betas=(0.5, 0.999))
     return optimizer
 
-def run_a_gan(D, G, D_solver, G_solver, discriminator_loss, generator_loss, show_every=250,
+def check_point_early_stop(i,PATH,d_loss_old, g_loss_old,d_loss_new, g_loss_new, model_G, model_D, epoch = 200):
+    if d_loss_old/d_loss_new >= 10 or d_loss_old/d_loss_new <= 0.1 or g_loss_old/g_loss_new >= 10 or g_loss_old/g_loss_new <= 0.1:
+        print('Early stop')
+        i = epoch + 1
+    else:
+        torch.save(model_G, PATH + 'model_G.pt')
+        torch.save(model_D, PATH + 'model_D.pt')
+
+    d_loss_old = d_loss_new
+    g_loss_old = g_loss_new
+
+    return i, d_loss_old, g_loss_old
+
+def run_a_gan(D, G, D_solver, G_solver, discriminator_loss, generator_loss, loader_train, show_every=250,
               batch_size=128, noise_size=96, num_epochs=10):
     """
     Train a GAN!
@@ -428,10 +433,11 @@ def run_a_gan(D, G, D_solver, G_solver, discriminator_loss, generator_loss, show
     - noise_size: Dimension of the noise to use as input to the generator.
     - num_epochs: Number of epochs over the training dataset to use for training.
     """
-    for epoch in range(num_epochs):
+    epoch = 0
+    while epoch <= num_epochs:
         for x, _ in loader_train:
-            if len(x) != batch_size:
-                continue
+            # if len(x) != batch_size:
+            #     continue
             D_solver.zero_grad()
             real_data = Variable(x).type(dtype)
             logits_real = D(2 * (real_data - 0.5)).type(dtype)
@@ -452,12 +458,20 @@ def run_a_gan(D, G, D_solver, G_solver, discriminator_loss, generator_loss, show
             g_error = generator_loss(gen_logits_fake)
             g_error.backward()
             G_solver.step()
+        if epoch == 0:
+            d_loss_old = d_total_error.item()
+            g_loss_old = g_error.item()
+        else:
+            epoch, d_loss_old, g_loss_old = check_point_early_stop(i=epoch, PATH=Model_save_p, d_loss_old=d_loss_old,
+                                                           g_loss_old=g_loss_old, d_loss_new=d_total_error.item(),
+                                                           g_loss_new=g_error.item(), model_G=G, model_D=D, epoch=Num_epochs)
 
         if (epoch % show_every == 0):
             print('Epoch : {}, D: {:.4}, G:{:.4}'.format(epoch, d_total_error.item(), g_error.item()))
             imgs_numpy = fake_images.data.cpu().numpy()
             show_images(imgs_numpy[0:16])
             plt.show()
+        epoch += 1
 
 # Make the discriminator
 # D = discriminator().type(dtype)
@@ -480,5 +494,39 @@ G_DC.apply(initialize_weights)
 D_DC_solver = get_optimizer(D_DC)
 G_DC_solver = get_optimizer(G_DC)
 
-run_a_gan(D_DC, G_DC, D_DC_solver, G_DC_solver, ls_discriminator_loss, generator_loss,batch_size=Batch_size,
-          show_every=Show_every, noise_size=NOISE_DIM, num_epochs=Num_epochs)
+calligraphy_dataset = GANNetworkDataset(train_list=train_list)
+Loader_train = DataLoader(calligraphy_dataset, shuffle=False, num_workers=8, batch_size=Batch_size, drop_last=True)
+imgs = Loader_train.__iter__().next()[0].numpy().squeeze()
+show_images(imgs)
+
+print('begin training...')
+time_start = time.time()
+run_a_gan(D_DC, G_DC, D_DC_solver, G_DC_solver, ls_discriminator_loss, generator_loss, loader_train=Loader_train,
+          batch_size=Batch_size, show_every=Show_every, noise_size=NOISE_DIM, num_epochs=Num_epochs)
+time_end = time.time()
+used_time = int(time_end-time_start)
+print('used time:%d s' % (used_time))
+
+
+#save sample----------------------------------------------------------------------------------------------------
+test_g_gan = torch.load(Model_save_p + 'model_G.pt')
+test_g_gan.eval()
+
+savei = 0
+while savei < Save_sample:
+    fake_seed = Variable(torch.randn(Batch_size, NOISE_DIM)).type(dtype)
+    # print(np.shape(fake_seed.cpu().numpy()))
+    fake_images = test_g_gan.forward(fake_seed)
+    fake_images = fake_images.cpu().detach().numpy()
+    saveBi = 0
+    while saveBi < Batch_size:
+        img = np.reshape(fake_images[saveBi], [img_height, img_width, 1])
+        # img = img[:, :, np.newaxis]
+        img = np.interp(img, [img.min(), img.max()], [0, 255])
+        img = array_to_img(img)
+        img_to_save_path = sample_image_p + str(savei) + '.jpeg'
+        img.save(img_to_save_path)
+        saveBi += 1
+        savei += 1
+        if savei == Save_sample:
+            saveBi = Batch_size
