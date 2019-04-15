@@ -74,8 +74,10 @@ class ChunkSampler(sampler.Sampler):
 
 NUM_TRAIN = 50000   # 训练集数量
 NUM_VAL = 5000      # 测试集数量
-NOISE_DIM = 96
-batch_size = 128
+NOISE_DIM = 1024
+Batch_size = 512
+Show_every = 1
+Num_epochs = 50000
 
 img_width = 128
 img_height = 128
@@ -84,10 +86,11 @@ hsv = True
 augment = False
 preprocess = False
 List_path = './list/calligraphy/'
-train_list = List_path+'train_list.txt'
+train_list = List_path+'all_train_list.txt'
 # mnist_train = dset.MNIST('./cs231n/datasets/MNIST_data', train=True, download=True,
 #                            transform=T.ToTensor())
-# loader_train = DataLoader(mnist_train, batch_size=batch_size,
+# print(mnist_train[0])
+# loader_train = DataLoader(mnist_train, batch_size=Batch_size,
 #                           sampler=ChunkSampler(NUM_TRAIN, 0)) # 从0位置开始采样NUM_TRAIN个数
 #
 # mnist_val = dset.MNIST('./cs231n/datasets/MNIST_data', train=True, download=True,
@@ -115,7 +118,7 @@ class GANNetworkDataset(Dataset):
             # Change from RGB space to HSV space
             img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
             # Mapping to [0, 255]
-            img = np.interp(img, [img.min(), img.max()], [0, 255])
+            img = np.interp(img, [img.min(), img.max()], [0, 1])
 
         if augment:
             img = np.reshape(img.astype(np.uint8))
@@ -132,7 +135,7 @@ class GANNetworkDataset(Dataset):
 
 calligraphy_dataset = GANNetworkDataset(train_list=train_list)
 # print(np.shape(calligraphy_dataset[2][0]))
-loader_train = DataLoader(calligraphy_dataset, shuffle=False, num_workers=8, batch_size=batch_size)
+loader_train = DataLoader(calligraphy_dataset, shuffle=False, num_workers=8, batch_size=Batch_size)
 
 imgs = loader_train.__iter__().next()[0].numpy().squeeze()
 # print(imgs.shape)
@@ -214,8 +217,22 @@ def build_dc_classifier():
     Build and return a PyTorch model for the DCGAN discriminator implementing
     the architecture above.
     """
+    # return nn.Sequential(
+    #     Unflatten(Batch_size, 1, 28, 28),
+    #     nn.Conv2d(1, 32, kernel_size=5, stride=1),
+    #     nn.LeakyReLU(negative_slope=0.01),
+    #     nn.MaxPool2d(2, stride=2),
+    #     nn.Conv2d(32, 64, kernel_size=5, stride=1),
+    #     nn.LeakyReLU(negative_slope=0.01),
+    #     nn.MaxPool2d(kernel_size=2, stride=2),
+    #     Flatten(),
+    #     nn.Linear(4 * 4 * 64, 4 * 4 * 64),
+    #     nn.LeakyReLU(negative_slope=0.01),
+    #     nn.Linear(4 * 4 * 64, 1)
+    # )
+
     return nn.Sequential(
-        Unflatten(batch_size, 1, 128, 128),           #28,28,32        #128,128,16
+        Unflatten(Batch_size, 1, 128, 128),           #28,28,32        #128,128,16
         nn.Conv2d(1, 16,kernel_size=5, stride=1),   #24,24,32          #124,124,16
         nn.LeakyReLU(negative_slope=0.01),
         nn.MaxPool2d(2, stride=2),                  #12,12,32          #62,62,16
@@ -245,13 +262,28 @@ def build_dc_generator(noise_dim=NOISE_DIM):
     Build and return a PyTorch model implementing the DCGAN generator using
     the architecture described above.
     """
+    # return nn.Sequential(
+    #     nn.Linear(noise_dim, 1024),
+    #     nn.ReLU(),
+    #     nn.BatchNorm1d(1024),
+    #     nn.Linear(1024, 7 * 7 * 128),
+    #     nn.BatchNorm1d(7 * 7 * 128),
+    #     Unflatten(Batch_size, 128, 7, 7),
+    #     nn.ConvTranspose2d(in_channels=128, out_channels=64, kernel_size=4, stride=2, padding=1),
+    #     nn.ReLU(inplace=True),
+    #     nn.BatchNorm2d(num_features=64),
+    #     nn.ConvTranspose2d(in_channels=64, out_channels=1, kernel_size=4, stride=2, padding=1),
+    #     nn.Tanh(),
+    #     Flatten(),
+    # )
+
     model = nn.Sequential(
         nn.Linear(noise_dim, 1024),
         nn.ReLU(),
         nn.BatchNorm1d(1024),
         nn.Linear(1024, 8*8*128),
         nn.BatchNorm1d(8*8*128),
-        Unflatten(batch_size, 128, 8, 8),
+        Unflatten(Batch_size, 128, 8, 8),
         nn.ConvTranspose2d(in_channels=128, out_channels=64, kernel_size=4, stride=2, padding=1),
         nn.ReLU(inplace=True),
         nn.BatchNorm2d(num_features=64),
@@ -270,7 +302,7 @@ def build_dc_generator(noise_dim=NOISE_DIM):
 test_g_gan = build_dc_generator().type(dtype)
 test_g_gan.apply(initialize_weights)
 
-fake_seed = Variable(torch.randn(batch_size, NOISE_DIM)).type(dtype)
+fake_seed = Variable(torch.randn(Batch_size, NOISE_DIM)).type(dtype)
 # print(np.shape(fake_seed.cpu().numpy()))
 fake_images = test_g_gan.forward(fake_seed)
 print(fake_images.size())
@@ -396,7 +428,6 @@ def run_a_gan(D, G, D_solver, G_solver, discriminator_loss, generator_loss, show
     - noise_size: Dimension of the noise to use as input to the generator.
     - num_epochs: Number of epochs over the training dataset to use for training.
     """
-    iter_count = 0
     for epoch in range(num_epochs):
         for x, _ in loader_train:
             if len(x) != batch_size:
@@ -407,7 +438,7 @@ def run_a_gan(D, G, D_solver, G_solver, discriminator_loss, generator_loss, show
 
             g_fake_seed = Variable(sample_noise(batch_size, noise_size)).type(dtype)
             fake_images = G(g_fake_seed).detach()
-            logits_fake = D(fake_images.view(batch_size, 1, 128, 128))
+            logits_fake = D(fake_images.view(batch_size, 1, img_width, img_height))
 
             d_total_error = discriminator_loss(logits_real, logits_fake)
             d_total_error.backward()
@@ -417,18 +448,16 @@ def run_a_gan(D, G, D_solver, G_solver, discriminator_loss, generator_loss, show
             g_fake_seed = Variable(sample_noise(batch_size, noise_size)).type(dtype)
             fake_images = G(g_fake_seed)
 
-            gen_logits_fake = D(fake_images.view(batch_size, 1, 128, 128))
+            gen_logits_fake = D(fake_images.view(batch_size, 1, img_width, img_height))
             g_error = generator_loss(gen_logits_fake)
             g_error.backward()
             G_solver.step()
 
-            if (iter_count % show_every == 0):
-                print('Iter: {}, D: {:.4}, G:{:.4}'.format(iter_count, d_total_error.item(), g_error.item()))
-                imgs_numpy = fake_images.data.cpu().numpy()
-                show_images(imgs_numpy[0:16])
-                plt.show()
-                print()
-            iter_count += 1
+        if (epoch % show_every == 0):
+            print('Epoch : {}, D: {:.4}, G:{:.4}'.format(epoch, d_total_error.item(), g_error.item()))
+            imgs_numpy = fake_images.data.cpu().numpy()
+            show_images(imgs_numpy[0:16])
+            plt.show()
 
 # Make the discriminator
 # D = discriminator().type(dtype)
@@ -451,4 +480,5 @@ G_DC.apply(initialize_weights)
 D_DC_solver = get_optimizer(D_DC)
 G_DC_solver = get_optimizer(G_DC)
 
-run_a_gan(D_DC, G_DC, D_DC_solver, G_DC_solver, ls_discriminator_loss, generator_loss, num_epochs=50000)
+run_a_gan(D_DC, G_DC, D_DC_solver, G_DC_solver, ls_discriminator_loss, generator_loss,batch_size=Batch_size,
+          show_every=Show_every, noise_size=NOISE_DIM, num_epochs=Num_epochs)
